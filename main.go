@@ -14,7 +14,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-const VERSION = "1.2.0"
+const VERSION = "1.3.0"
 
 // runSentinel executes the sentinel CLI with the given arguments
 func runSentinel(args ...string) ([]byte, error) {
@@ -788,6 +788,350 @@ func main() {
 		jsonBytes, _ := json.Marshal(resp)
 		return mcp.NewToolResultText(string(jsonBytes)), nil
 	})
+
+	// ══════════════════════════════════════════════════════════════════════════════
+	// Tool 15: get_dns_connections
+	// ══════════════════════════════════════════════════════════════════════════════
+	dnsConnTool := mcp.NewTool("get_dns_connections",
+		mcp.WithDescription("Get active DNS connections (port 53). Use to identify what domains are being accessed or for network forensics."),
+	)
+
+	s.AddTool(dnsConnTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		output, err := runSentinel("--dns-connections")
+		raw := string(output)
+
+		if err != nil {
+			return mcp.NewToolResultError(errorResponse(
+				"dns_connections",
+				fmt.Sprintf("Failed to get DNS connections: %v", err),
+				"EXECUTION_FAILED",
+				"Ensure sentinel supports --dns-connections flag",
+			)), nil
+		}
+
+		if jsonPayload, err := extractJSON(raw); err == nil {
+			return mcp.NewToolResultText(jsonPayload), nil
+		}
+
+		resp := map[string]interface{}{
+			"success": true,
+			"action":  "dns_connections",
+			"details": strings.TrimSpace(raw),
+		}
+		jsonBytes, _ := json.Marshal(resp)
+		return mcp.NewToolResultText(string(jsonBytes)), nil
+	})
+
+	// ══════════════════════════════════════════════════════════════════════════════
+	// Tool 16: get_process_tree
+	// ══════════════════════════════════════════════════════════════════════════════
+	processTreeTool := mcp.NewTool("get_process_tree",
+		mcp.WithDescription("Get the process hierarchy tree. Use to trace process ancestry (who started what) for forensics and malware analysis."),
+	)
+
+	s.AddTool(processTreeTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		cmd := exec.Command("sentinel", "--process-tree")
+		output, err := cmd.CombinedOutput()
+		raw := string(output)
+
+		if err != nil {
+			output, err = runSentinel("--process-tree")
+			raw = string(output)
+			if err != nil {
+				return mcp.NewToolResultError(errorResponse(
+					"process_tree",
+					fmt.Sprintf("Failed to get process tree: %v", err),
+					"EXECUTION_FAILED",
+					"Ensure sentinel supports --process-tree flag",
+				)), nil
+			}
+		}
+
+		if jsonPayload, err := extractJSON(raw); err == nil {
+			return mcp.NewToolResultText(jsonPayload), nil
+		}
+
+		resp := map[string]interface{}{
+			"success": true,
+			"action":  "process_tree",
+			"details": strings.TrimSpace(raw),
+		}
+		jsonBytes, _ := json.Marshal(resp)
+		return mcp.NewToolResultText(string(jsonBytes)), nil
+	})
+
+	// ══════════════════════════════════════════════════════════════════════════════
+	// Tool 17: get_process_hash
+	// ══════════════════════════════════════════════════════════════════════════════
+	processHashTool := mcp.NewTool("get_process_hash",
+		mcp.WithDescription("Get the SHA256 hash of a process executable. Use to verify the integrity of a running program (EDR/threat intel lookup)."),
+		mcp.WithNumber("pid",
+			mcp.Description("Process ID to hash"),
+			mcp.Required(),
+		),
+	)
+
+	s.AddTool(processHashTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		pid, err := request.RequireInt("pid")
+		if err != nil {
+			return mcp.NewToolResultError(errorResponse(
+				"process_hash",
+				"Missing required parameter: pid",
+				"INVALID_PID",
+				"Provide a valid process ID",
+			)), nil
+		}
+
+		if pid <= 0 {
+			return mcp.NewToolResultError(errorResponse(
+				"process_hash",
+				"PID must be a positive integer",
+				"INVALID_PID",
+				"Provide a valid process ID from get_top_processes",
+			)), nil
+		}
+
+		output, err := runSentinel("--process-hash", strconv.Itoa(pid))
+		raw := string(output)
+
+		if err != nil {
+			return mcp.NewToolResultError(errorResponse(
+				"process_hash",
+				fmt.Sprintf("Failed to hash process: %v", err),
+				"EXECUTION_FAILED",
+				"Check if process exists and you have permissions",
+			)), nil
+		}
+
+		if jsonPayload, err := extractJSON(raw); err == nil {
+			return mcp.NewToolResultText(jsonPayload), nil
+		}
+
+		resp := map[string]interface{}{
+			"success": true,
+			"action":  "process_hash",
+			"pid":     pid,
+			"details": strings.TrimSpace(raw),
+		}
+		jsonBytes, _ := json.Marshal(resp)
+		return mcp.NewToolResultText(string(jsonBytes)), nil
+	})
+
+	// ══════════════════════════════════════════════════════════════════════════════
+	// Tool 18: dns_lookup
+	// ══════════════════════════════════════════════════════════════════════════════
+	dnsLookupTool := mcp.NewTool("dns_lookup",
+		mcp.WithDescription("Resolve DNS records for a domain (A, AAAA, MX, TXT, NS, CNAME). Use to investigate domains or verify DNS configuration."),
+		mcp.WithString("domain",
+			mcp.Description("Domain name to resolve"),
+			mcp.Required(),
+		),
+	)
+
+	s.AddTool(dnsLookupTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		domain, err := request.RequireString("domain")
+		if err != nil {
+			return mcp.NewToolResultError(errorResponse(
+				"dns_lookup",
+				"Missing required parameter: domain",
+				"INVALID_DOMAIN",
+				"Provide a domain name to resolve",
+			)), nil
+		}
+
+		if strings.TrimSpace(domain) == "" {
+			return mcp.NewToolResultError(errorResponse(
+				"dns_lookup",
+				"Domain cannot be empty",
+				"INVALID_DOMAIN",
+				"Provide a valid domain name",
+			)), nil
+		}
+
+		cmd := exec.Command("sentinel", "--dns", domain)
+		output, err := cmd.CombinedOutput()
+		raw := string(output)
+
+		if err != nil {
+			return mcp.NewToolResultError(errorResponse(
+				"dns_lookup",
+				fmt.Sprintf("Failed to resolve DNS: %v", err),
+				"DNS_FAILED",
+				"Check if the domain is valid",
+			)), nil
+		}
+
+		if jsonPayload, err := extractJSON(raw); err == nil {
+			return mcp.NewToolResultText(jsonPayload), nil
+		}
+
+		resp := map[string]interface{}{
+			"success": true,
+			"action":  "dns_lookup",
+			"domain":  domain,
+			"details": strings.TrimSpace(raw),
+		}
+		jsonBytes, _ := json.Marshal(resp)
+		return mcp.NewToolResultText(string(jsonBytes)), nil
+	})
+
+	// ══════════════════════════════════════════════════════════════════════════════
+	// Tool 19: traceroute
+	// ══════════════════════════════════════════════════════════════════════════════
+	tracerouteTool := mcp.NewTool("traceroute",
+		mcp.WithDescription("Trace network path to a host. Use to diagnose latency, routing issues, or map network topology."),
+		mcp.WithString("host",
+			mcp.Description("Destination host or IP address"),
+			mcp.Required(),
+		),
+	)
+
+	s.AddTool(tracerouteTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		host, err := request.RequireString("host")
+		if err != nil {
+			return mcp.NewToolResultError(errorResponse(
+				"traceroute",
+				"Missing required parameter: host",
+				"INVALID_HOST",
+				"Provide a destination host",
+			)), nil
+		}
+
+		if strings.TrimSpace(host) == "" {
+			return mcp.NewToolResultError(errorResponse(
+				"traceroute",
+				"Host cannot be empty",
+				"INVALID_HOST",
+				"Provide a valid hostname or IP",
+			)), nil
+		}
+
+		cmd := exec.Command("sentinel", "--traceroute", host)
+		output, err := cmd.CombinedOutput()
+		raw := string(output)
+
+		if err != nil {
+			return mcp.NewToolResultError(errorResponse(
+				"traceroute",
+				fmt.Sprintf("Traceroute failed: %v", err),
+				"TRACEROUTE_FAILED",
+				"Check if host is reachable",
+			)), nil
+		}
+
+		if jsonPayload, err := extractJSON(raw); err == nil {
+			return mcp.NewToolResultText(jsonPayload), nil
+		}
+
+		resp := map[string]interface{}{
+			"success": true,
+			"action":  "traceroute",
+			"target":  host,
+			"details": strings.TrimSpace(raw),
+		}
+		jsonBytes, _ := json.Marshal(resp)
+		return mcp.NewToolResultText(string(jsonBytes)), nil
+	})
+
+	// ══════════════════════════════════════════════════════════════════════════════
+	// Tool 20: arp_table
+	// ══════════════════════════════════════════════════════════════════════════════
+	arpTableTool := mcp.NewTool("arp_table",
+		mcp.WithDescription("Get the ARP cache (local network devices). Use to see what devices are on the local network by MAC and IP."),
+	)
+
+	s.AddTool(arpTableTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		cmd := exec.Command("sentinel", "--arp")
+		output, err := cmd.CombinedOutput()
+		raw := string(output)
+
+		if err != nil {
+			return mcp.NewToolResultError(errorResponse(
+				"arp_table",
+				fmt.Sprintf("Failed to get ARP table: %v", err),
+				"EXECUTION_FAILED",
+				"Ensure sentinel supports --arp flag",
+			)), nil
+		}
+
+		if jsonPayload, err := extractJSON(raw); err == nil {
+			return mcp.NewToolResultText(jsonPayload), nil
+		}
+
+		resp := map[string]interface{}{
+			"success": true,
+			"action":  "arp_table",
+			"details": strings.TrimSpace(raw),
+		}
+		jsonBytes, _ := json.Marshal(resp)
+		return mcp.NewToolResultText(string(jsonBytes)), nil
+	})
+
+	// ══════════════════════════════════════════════════════════════════════════════
+	// Tool 21: packet_capture
+	// ══════════════════════════════════════════════════════════════════════════════
+	pcapTool := mcp.NewTool("packet_capture",
+		mcp.WithDescription("Capture a small sample of network packets. Use for deep packet inspection or debugging protocol issues. Requires sudo."),
+		mcp.WithString("interface",
+			mcp.Description("Network interface (e.g., en0, eth0)"),
+			mcp.Required(),
+		),
+		mcp.WithNumber("count",
+			mcp.Description("Number of packets to capture (default: 20)"),
+		),
+	)
+
+	s.AddTool(pcapTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		iface, err := request.RequireString("interface")
+		if err != nil {
+			return mcp.NewToolResultError(errorResponse(
+				"packet_capture",
+				"Missing required parameter: interface",
+				"INVALID_INTERFACE",
+				"Provide a network interface (e.g., en0)",
+			)), nil
+		}
+
+		if strings.TrimSpace(iface) == "" {
+			return mcp.NewToolResultError(errorResponse(
+				"packet_capture",
+				"Interface cannot be empty",
+				"INVALID_INTERFACE",
+				"Provide a valid interface name",
+			)), nil
+		}
+
+		count := 20
+		if c, err := request.RequireInt("count"); err == nil && c > 0 {
+			count = c
+		}
+
+		output, err := runSentinel("--pcap", iface, "--pcap-count", strconv.Itoa(count))
+		raw := string(output)
+
+		if err != nil {
+			return mcp.NewToolResultError(errorResponse(
+				"packet_capture",
+				fmt.Sprintf("Packet capture failed: %v", err),
+				"PCAP_FAILED",
+				"Ensure tcpdump is available and you have sudo permissions",
+			)), nil
+		}
+
+		if jsonPayload, err := extractJSON(raw); err == nil {
+			return mcp.NewToolResultText(jsonPayload), nil
+		}
+
+		resp := map[string]interface{}{
+			"success":   true,
+			"action":    "packet_capture",
+			"interface": iface,
+			"details":   strings.TrimSpace(raw),
+		}
+		jsonBytes, _ := json.Marshal(resp)
+		return mcp.NewToolResultText(string(jsonBytes)), nil
+	})
+
 
 	// ═══════════════════════════════════════════════════════════════════════════
 	// Start Server
